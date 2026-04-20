@@ -1,7 +1,5 @@
 from sqlalchemy.orm import Session
-from app.models.user import User
-from app.models.routine import Routine
-from app.models.habit import Habit
+from app.models.onboarding import User, Habit, Routine
 
 def create_onboarding(data, db: Session):
     # Create user
