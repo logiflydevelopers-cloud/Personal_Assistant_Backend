@@ -34,4 +34,4 @@ def create_onboarding(data, db: Session):
 
     db.commit()
 
-    return {"message": "Onboarding completed", "user_id": user.id}
+    return {"message": "Onboarding completed", "user_id": user.user_id}
