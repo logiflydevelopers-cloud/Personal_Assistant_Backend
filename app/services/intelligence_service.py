@@ -37,7 +37,7 @@ def detect_wakeup(event, db):
         .first()
     )
 
-    print("==============================="+last_event+"===============================")
+    print(f"==============================={last_event}===============================")
     
     if not last_event:
         return
@@ -89,7 +89,7 @@ def detect_sleep(event, db):
         .first()
     )
 
-    print("==============================="+last_event+"===============================")
+    print(f"==============================={last_event}===============================")
 
     if not last_event:
         return
@@ -155,7 +155,7 @@ def detect_screen_behaviour(event, db):
     # Late night usage
     late_night_usage = False
     for e in event:
-        if e.timestamp.hour >=0 and e.timestamp.hpur <= 2:
+        if e.timestamp.hour >=0 and e.timestamp.hour <= 2:
             late_night_usage = True
             break
 
