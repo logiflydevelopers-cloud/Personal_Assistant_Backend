@@ -1,6 +1,7 @@
 from datetime import timedelta
 from collections import defaultdict
 from app.models.user_events import UserEvent
+from app.services.intelligence_storage import save_wakeup, save_sleep, save_screen_behaviour, save_meals
 
 # ======================================================
 # MAIN ENTRY POINT
@@ -14,6 +15,8 @@ def process_event(event, db):
     if event.event_type == "unlock":
         detect_wakeup(event, db)
 
+    elif event.event_type == "lock":
+        detect_sleep(event, db)
 
 
 # ======================================================
@@ -22,20 +25,19 @@ def process_event(event, db):
 
 # ------------------ WAKE-UP ------------------
 def detect_wakeup(event, db):
-    """
-    Detect wake-up using:
-    - time gap
-    - morning window
-    - recent events
-    """
 
     last_event = (
         db.query(UserEvent)
         .filter(UserEvent.user_id == event.user_id)
         .order_by(UserEvent.timestamp.desc())
-        .offset(1)
-        .first()
+        .limit(2)
+        .all()
     )
+
+    if len(event) < 2:
+        return
+    
+    last_event = event[1]
 
     print(f"==============================={last_event}===============================")
     
@@ -43,23 +45,19 @@ def detect_wakeup(event, db):
         return
 
     gap = event.timestamp - last_event.timestamp
-
     score = 0
 
-    # Rule 1: long inactivity
     if gap >= timedelta(hours=5):
         score += 40
 
-    # Rule 2: morning time
     if 4 <= event.timestamp.hour <= 11:
         score += 30
 
-    # Rule 3: check follow-up activity
     recent_events = (
         db.query(UserEvent)
         .filter(
             UserEvent.user_id == event.user_id,
-            UserEvent.timestamp >= event.timestamp
+            UserEvent.timestamp > event.timestamp
         )
         .limit(3)
         .all()
@@ -68,26 +66,40 @@ def detect_wakeup(event, db):
     if len(recent_events) >= 2:
         score += 20
 
-    # FINAL DECISION
     if score >= 60:
+
+        # Prevent duplicate wakeups
+        existing = db.execute("""
+            SELECT wake_time FROM user_daily_summary
+            WHERE user_id = :user_id AND date = :date
+        """, {
+            "user_id": event.user_id,
+            "date": event.timestamp.date()
+        }).fetchone()
+
+        if existing and existing[0]:
+            if abs(existing[0] - event.timestamp) < timedelta(minutes=30):
+                return
+
         print(f"Wake-up detected for user {event.user_id} at {event.timestamp}")
+        save_wakeup(db, event.user_id, event.timestamp)
 
 
 # ------------------ SLEEP ------------------
 def detect_sleep(event, db):
-    """
-    Detect Sleep using:
-    - Time gap
-    - Night time window
-    """
 
     last_event = (
         db.query(UserEvent)
         .filter(UserEvent.user_id == event.user_id)
         .order_by(UserEvent.timestamp.desc())
-        .offset(1)
-        .first()
+        .limit(2)
+        .all()
     )
+
+    if len(event) < 2:
+        return
+    
+    last_event = event[1]
 
     print(f"==============================={last_event}===============================")
 
@@ -95,20 +107,31 @@ def detect_sleep(event, db):
         return
     
     gap = event.timestamp - last_event.timestamp
-
     score = 0
 
-    # Rule 1: Long time gap
     if gap >= timedelta(hours=5):
         score += 40
 
-    # Rule 2: Night time window
-    if event.timestamp.hour >=21 or event.timestamp.hour <= 2:
+    if event.timestamp.hour >= 21 or event.timestamp.hour <= 2:
         score += 30
 
-    # Final Decision
     if score >= 60:
-        print(f"Sleep Detected for user {event.user_id} at {event.timestamp}") 
+
+        # Prevent duplicate sleep entries
+        existing = db.execute("""
+            SELECT sleep_time FROM user_daily_summary
+            WHERE user_id = :user_id AND date = :date
+        """, {
+            "user_id": event.user_id,
+            "date": event.timestamp.date()
+        }).fetchone()
+
+        if existing and existing[0]:
+            if abs(existing[0] - event.timestamp) < timedelta(minutes=30):
+                return
+
+        print(f"Sleep Detected for user {event.user_id} at {event.timestamp}")
+        save_sleep(db, event.user_id, event.timestamp)
 
 
 # ------------------ SCREEN BEHAVIOUR ------------------
@@ -179,7 +202,7 @@ def detect_screen_behaviour(event, db):
 
     # Final Output
     return {
-        "total_screen_time_hours": round(total_screen_time.total_seconds()),
+        "total_screen_time": round(total_screen_time.total_seconds()),
         "unlock_count": unlock_count,
         "short_sessions": short_sessions,
         "focus_sessions": focus_sessions,
@@ -247,6 +270,36 @@ def detect_meal(event, db, is_stationary=True):
         i = j # move to next window
 
     return meals_detected
+
+def process_daily_behaviour(user_id, db):
+    from datetime import datetime, timedelta
+
+    today = datetime.utcnow().date()
+    start = datetime.combine(today, datetime.min.time())
+    end = start + timedelta(days=1)
+
+    events = (
+        db.query(UserEvent)
+        .filter(
+            UserEvent.user_id == user_id,
+            UserEvent.timestamp >= start,
+            UserEvent.timestamp < end
+        )
+        .order_by(UserEvent.timestamp.asc())
+        .all()
+    )
+
+    if not events:
+        return
+
+    # Screen behaviour
+    result = detect_screen_behaviour(events, db)
+    save_screen_behaviour(db, user_id, result, today)
+
+    # Meals detection
+    meals = detect_meal(events, db)
+    if meals:
+        save_meals(db, user_id, meals)
 
 
 # ------------------ ACTIVITY ------------------

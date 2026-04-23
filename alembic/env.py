@@ -7,6 +7,7 @@ from alembic import context
 import os
 from app.db.base import Base
 from dotenv import load_dotenv
+from app.models import *
 
 load_dotenv()
 # this is the Alembic Config object, which provides

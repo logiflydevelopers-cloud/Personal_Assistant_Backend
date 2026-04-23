@@ -1,0 +1,20 @@
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON
+from app.db.base import Base
+from datetime import datetime
+import uuid
+
+class UserDailySummary(Base):
+    __tablename__ = "user_daily_summary"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+
+    date = Column(DateTime, index=True)
+
+    wake_time = Column(DateTime, nullable=True)
+    sleep_time = Column(DateTime, nullable=True)
+
+    total_screen_time = Column(Integer)  # seconds
+    behaviour_type = Column(String)  # focused/distracted/unhealthy
+
+    created_at = Column(DateTime, default=datetime.utcnow)
