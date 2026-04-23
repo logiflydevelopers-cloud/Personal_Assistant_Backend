@@ -24,3 +24,4 @@ class UserEvent(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
+    
