@@ -115,21 +115,56 @@ def save_place_visits(db, user_id, stays):
         try:
             print(f"Processing stay: {stay}")
 
+            # Extract values correctly
+            start_ = stay["start_time"]
+            end_ = stay["end_time"]
+            duration = stay["duration"]
+            lat = stay["lat"]
+            lon = stay["lon"]
+
+            # 🔒 Prevent duplicate visits
+            existing = db.execute(text("""
+                SELECT id FROM user_place_visits
+                WHERE user_id = :user_id
+                AND ABS(EXTRACT(EPOCH FROM (start_time - :start_time))) < 300
+            """), {
+                "user_id": user_id,
+                "start_time": start_
+            }).fetchone()
+
+            if existing:
+                print("Duplicate visit → skipping")
+                continue
+
+            # OPTIONAL: find existing place_id
+            place = db.execute(text("""
+                SELECT id FROM user_places
+                WHERE user_id = :user_id
+                AND ABS(lat - :lat) < 0.001
+                AND ABS(lon - :lon) < 0.001
+            """), {
+                "user_id": user_id,
+                "lat": lat,
+                "lon": lon
+            }).fetchone()
+
+            place_id = place[0] if place else None
+
             db.execute(text("""
-                INSERT INTO user_place_visits 
-                (user_id, place_id, start_time, end_time, duration)
+                INSERT INTO user_place_visits (
+                    user_id, place_id, start_time, end_time, duration, lat, lon
+                )
                 VALUES (
-                    :user_id,
-                    NULL,
-                    :start_time,
-                    :end_time,
-                    :duration
+                    :user_id, :place_id, :start_time, :end_time, :duration, :lat, :lon
                 )
             """), {
                 "user_id": user_id,
-                "start_time": stay["start_time"],
-                "end_time": stay["end_time"],
-                "duration": int(stay["duration"].total_seconds())
+                "place_id": place_id,
+                "start_time": start_,
+                "end_time": end_,
+                "duration": int(duration.total_seconds()),
+                "lat": lat,
+                "lon": lon
             })
 
             print("Visit saved")
@@ -150,15 +185,15 @@ def save_places(db, user_id, places):
     for place in places:
         try:
             lat, lon = place["place"]
+            place_type = place["type"]
 
             print(f"Processing place: {place}")
 
-            # Check if already exists
             existing = db.execute(text("""
                 SELECT id FROM user_places
                 WHERE user_id = :user_id
-                AND ABS(lat::float - :lat) < 0.001
-                AND ABS(lon::float - :lon) < 0.001
+                AND ABS(lat - :lat) < 0.001
+                AND ABS(lon - :lon) < 0.001
             """), {
                 "user_id": user_id,
                 "lat": lat,
@@ -166,7 +201,6 @@ def save_places(db, user_id, places):
             }).fetchone()
 
             if existing:
-                # Update type
                 db.execute(text("""
                     UPDATE user_places
                     SET place_type = :type,
@@ -174,21 +208,20 @@ def save_places(db, user_id, places):
                     WHERE id = :id
                 """), {
                     "id": existing[0],
-                    "type": place["type"]
+                    "type": place_type
                 })
 
                 print("Updated existing place")
 
             else:
-                # Insert new
                 db.execute(text("""
                     INSERT INTO user_places (user_id, lat, lon, place_type)
                     VALUES (:user_id, :lat, :lon, :type)
                 """), {
                     "user_id": user_id,
-                    "lat": str(lat),
-                    "lon": str(lon),
-                    "type": place["type"]
+                    "lat": lat,   
+                    "lon": lon,
+                    "type": place_type
                 })
 
                 print("Inserted new place")
