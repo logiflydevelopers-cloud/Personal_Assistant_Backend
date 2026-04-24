@@ -1,54 +1,202 @@
+from sqlalchemy import text
+from datetime import timedelta
+
 def save_wakeup(db, user_id, timestamp):
-    db.execute("""
+
+    db.execute(text("""
         INSERT INTO user_daily_summary (user_id, date, wake_time)
         VALUES (:user_id, :date, :wake_time)
         ON CONFLICT (user_id, date)
         DO UPDATE SET wake_time = :wake_time
-    """, {
+    """), {
         "user_id": user_id,
         "date": timestamp.date(),
         "wake_time": timestamp
     })
+
     db.commit()
 
 def save_sleep(db, user_id, timestamp):
-    db.execute("""
+
+    sleep_date = timestamp.date()
+    if timestamp.hour <= 3:
+        sleep_date = sleep_date - timedelta(days=1)
+
+    db.execute(text("""
         INSERT INTO user_daily_summary (user_id, date, sleep_time)
         VALUES (:user_id, :date, :sleep_time)
         ON CONFLICT (user_id, date)
         DO UPDATE SET sleep_time = :sleep_time
-    """, {
+    """), {
         "user_id": user_id,
-        "date": timestamp.date(),
+        "date": sleep_date,
         "sleep_time": timestamp
     })
+
     db.commit()
 
+
 def save_screen_behaviour(db, user_id, result, date):
-    db.execute("""
+
+    print("\n===== SAVING SCREEN BEHAVIOUR =====")
+    print(result)
+
+    db.execute(text("""
         INSERT INTO user_daily_summary (user_id, date, total_screen_time, behaviour_type)
         VALUES (:user_id, :date, :screen_time, :behaviour)
         ON CONFLICT (user_id, date)
         DO UPDATE SET
             total_screen_time = :screen_time,
             behaviour_type = :behaviour
-    """, {
+    """), {
         "user_id": user_id,
         "date": date,
-        "screen_time": result["total_screen_time_seconds"],
+        "screen_time": result.get("total_screen_time") or result.get("total_screen_time_seconds"),
         "behaviour": result["behaviour"]
     })
+
     db.commit()
 
+    print("SAVED SUCCESSFULLY\n")
+
 def save_meals(db, user_id, meals):
+
+    print("\n===== SAVE MEALS START =====")
+
     for meal in meals:
-        db.execute("""
-            INSERT INTO user_meals (user_id, meal_type, time, confidence)
-            VALUES (:user_id, :meal_type, :time, :confidence)
-        """, {
-            "user_id": user_id,
-            "meal_type": meal["meal_type"],
-            "time": meal["time"],
-            "confidence": meal["confidence"]
-        })
+        try:
+            print(f"Processing meal: {meal}")
+
+            # Prevent duplicate (within 30 mins)
+            existing = db.execute(text("""
+                SELECT time FROM user_meals
+                WHERE user_id = :user_id
+                AND meal_type = :meal_type
+                AND ABS(EXTRACT(EPOCH FROM (time - :time))) < 1800
+            """), {
+                "user_id": user_id,
+                "meal_type": meal["meal_type"],
+                "time": meal["time"]
+            }).fetchone()
+
+            print(f"Existing meal check: {existing}")
+
+            if existing:
+                print("Duplicate meal detected → skipping")
+                continue
+
+            # Insert meal
+            db.execute(text("""
+                INSERT INTO user_meals (user_id, meal_type, time, confidence)
+                VALUES (:user_id, :meal_type, :time, :confidence)
+            """), {
+                "user_id": user_id,
+                "meal_type": meal["meal_type"],
+                "time": meal["time"],
+                "confidence": meal["confidence"]
+            })
+
+            print("Meal saved successfully")
+
+        except Exception as e:
+            print(f"Error saving meal: {e}")
+            db.rollback()
+
     db.commit()
+
+    print("===== SAVE MEALS END =====\n")
+
+
+def save_place_visits(db, user_id, stays):
+
+    print("\n===== SAVE PLACE VISITS START =====")
+
+    for stay in stays:
+        try:
+            print(f"Processing stay: {stay}")
+
+            db.execute(text("""
+                INSERT INTO user_place_visits 
+                (user_id, place_id, start_time, end_time, duration)
+                VALUES (
+                    :user_id,
+                    NULL,
+                    :start_time,
+                    :end_time,
+                    :duration
+                )
+            """), {
+                "user_id": user_id,
+                "start_time": stay["start_time"],
+                "end_time": stay["end_time"],
+                "duration": int(stay["duration"].total_seconds())
+            })
+
+            print("Visit saved")
+
+        except Exception as e:
+            print(f"Error saving visit: {e}")
+            db.rollback()
+
+    db.commit()
+
+    print("===== SAVE PLACE VISITS END =====\n")
+
+
+def save_places(db, user_id, places):
+
+    print("\n===== SAVE PLACES START =====")
+
+    for place in places:
+        try:
+            lat, lon = place["place"]
+
+            print(f"Processing place: {place}")
+
+            # Check if already exists
+            existing = db.execute(text("""
+                SELECT id FROM user_places
+                WHERE user_id = :user_id
+                AND ABS(lat::float - :lat) < 0.001
+                AND ABS(lon::float - :lon) < 0.001
+            """), {
+                "user_id": user_id,
+                "lat": lat,
+                "lon": lon
+            }).fetchone()
+
+            if existing:
+                # Update type
+                db.execute(text("""
+                    UPDATE user_places
+                    SET place_type = :type,
+                        updated_at = NOW()
+                    WHERE id = :id
+                """), {
+                    "id": existing[0],
+                    "type": place["type"]
+                })
+
+                print("Updated existing place")
+
+            else:
+                # Insert new
+                db.execute(text("""
+                    INSERT INTO user_places (user_id, lat, lon, place_type)
+                    VALUES (:user_id, :lat, :lon, :type)
+                """), {
+                    "user_id": user_id,
+                    "lat": str(lat),
+                    "lon": str(lon),
+                    "type": place["type"]
+                })
+
+                print("Inserted new place")
+
+        except Exception as e:
+            print(f"Error saving place: {e}")
+            db.rollback()
+
+    db.commit()
+
+    print("===== SAVE PLACES END =====\n")

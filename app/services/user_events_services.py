@@ -1,9 +1,11 @@
 from app.models.user_events import UserEvent
 from app.models.onboarding import User
 from datetime import datetime
+from app.services.intelligence_service import process_event
+import os
 from app.workers.tasks import process_event_task
 
-def create_event(data, db):
+def create_event(data, db, background_tasks=None):
 
     user = db.query(User).filter(User.user_id == data.user_id).first()
 
@@ -21,7 +23,6 @@ def create_event(data, db):
     db.commit()
     db.refresh(event)
 
-    # Send to Celery
-    process_event_task.delay(event.id)
+    print(f"Event stored: {event.event_type} at {event.timestamp}")
 
-    return {"message": "event stored"}
+    return event

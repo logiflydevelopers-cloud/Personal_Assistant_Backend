@@ -1,7 +1,17 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON, Float
 from app.db.base import Base
 from datetime import datetime
+from sqlalchemy import UniqueConstraint
 import uuid
+
+def generate_user_daily_summary_id():
+    return "uds_" + uuid.uuid4().hex[:6].upper()
+
+def generate_user_meals_id():
+    return "umeal_" + uuid.uuid4().hex[:6].upper()
+
+def generate_user_palce_id():
+    return "uplaces_" + uuid.uuid4().hex[:6].upper()
 
 
 class UserDailySummary(Base):
@@ -22,7 +32,7 @@ class UserDailySummary(Base):
 
 
 class UserMeal(Base):
-    __tablename__= "user_meal"
+    __tablename__ = "user_meals"
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
@@ -30,7 +40,9 @@ class UserMeal(Base):
     meal_type = Column(String)
     time = Column(DateTime)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    confidence = Column(String)
+
+    created_at = Column(DateTime)
 
 
 class UserPlace(Base):
@@ -39,8 +51,8 @@ class UserPlace(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
 
-    lat = Column(String)
-    lon = Column(String)
+    lat = Column(Float)
+    lon = Column(Float)
 
     place_type = Column(String) # home/work/etc
 
@@ -54,11 +66,28 @@ class UserPlaceVisit(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
 
-    place_id = Column(Integer, ForeignKey("user_places.id"))
+    lat = Column(Float)
+    lon = Column(Float)
+
+    place_id = Column(Integer, ForeignKey("user_places.id"), nullable=True)
 
     start_time = Column(DateTime)
     end_time = Column(DateTime)
 
-    duration = Column(Integer)  # seconds
+    duration = Column(Integer)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UserLocation(Base):
+    __tablename__ = "user_locations"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+
+    lat = Column(Float)
+    lon = Column(Float)
+
+    timestamp = Column(DateTime, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
