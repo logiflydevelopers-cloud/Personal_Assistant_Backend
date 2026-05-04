@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Time, Float
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Time, Float, Boolean
 from sqlalchemy.orm import relationship
 from app.db.base import Base
 from datetime import datetime
@@ -23,6 +23,8 @@ class User(Base):
 
     routines = relationship("Routine", back_populates="user", cascade="all, delete")
     habits = relationship("Habit", back_populates="user", cascade="all, delete")
+
+    is_active = Column(Boolean, default=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

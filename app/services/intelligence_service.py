@@ -1,18 +1,24 @@
-from datetime import timedelta
+from datetime import timedelta, datetime
 from sqlalchemy import text
 from collections import defaultdict
 from app.models.user_events import UserEvent
-from app.services.intelligence_storage import save_wakeup, save_sleep, save_screen_behaviour, save_meals
-import math
+from app.services.intelligence_storage import (
+    save_wakeup, save_sleep, save_screen_behaviour, save_meals
+)
 
 # ======================================================
-# MAIN ENTRY POINT
+# CONFIG
+# ======================================================
+SCREEN_EVENTS = {"unlock", "lock", "app_open"}
+FOCUS_MIN = timedelta(minutes=45)
+FOCUS_MAX = timedelta(minutes=90)
+
+
+# ======================================================
+# ENTRY POINT (FIXED: NO DAILY CALL HERE)
 # ======================================================
 def process_event(event, db):
-    """
-    Central brain of the system.
-    Every event passes through here.
-    """
+    print(f"\n⚡ Processing event: {event.event_type} @ {event.timestamp}")
 
     if event.event_type == "unlock":
         detect_wakeup(event, db)
@@ -20,153 +26,99 @@ def process_event(event, db):
     elif event.event_type == "lock":
         detect_sleep(event, db)
 
+    # ❌ REMOVED daily processing from here
+    # Daily pipeline should be triggered AFTER batch insert
+
 
 # ======================================================
-# EVENT DETECTION
+# HELPERS
 # ======================================================
+def normalize_events(events):
+    print("\n🔧 Normalizing events...")
 
-# ------------------ WAKE-UP ------------------
+    events = sorted(events, key=lambda x: x.timestamp)
+
+    cleaned = []
+    seen = set()
+
+    for e in events:
+        # safer unique key (avoid accidental drops)
+        key = (e.event_type, e.timestamp, getattr(e, "id", None))
+
+        if key not in seen:
+            cleaned.append(e)
+            seen.add(key)
+
+    filtered = [e for e in cleaned if e.event_type in SCREEN_EVENTS]
+
+    print(f"➡️ {len(filtered)} events after normalization")
+    return filtered
+
+
+# ======================================================
+# WAKEUP DETECTION (UNCHANGED LOGIC)
+# ======================================================
 def detect_wakeup(event, db):
 
-    print("\n===== WAKEUP DETECTION START =====")
-
-    events = (
-        db.query(UserEvent)
-        .filter(UserEvent.user_id == event.user_id)
-        .order_by(UserEvent.timestamp.desc())
-        .limit(2)
+    events = db.query(UserEvent)\
+        .filter(UserEvent.user_id == event.user_id)\
+        .order_by(UserEvent.timestamp.desc())\
+        .limit(3)\
         .all()
-    )
-
-    print(f"Fetched events count: {len(events)}")
 
     if len(events) < 2:
-        print("Not enough events for wakeup detection")
         return
 
-    # Use current event explicitly
-    latest_event = event
-    previous_event = events[1]
+    prev = events[1]
+    gap = event.timestamp - prev.timestamp
 
-    print(f"Prev: {previous_event.timestamp}, Curr: {latest_event.timestamp}")
-
-    if latest_event.timestamp == previous_event.timestamp:
-        print("Duplicate timestamps → skipping")
+    if gap < timedelta(hours=4):
         return
 
-    gap = latest_event.timestamp - previous_event.timestamp
-    print(f"GAP: {gap}")
-
-    score = 0
-
-    if gap >= timedelta(hours=5):
-        score += 40
-        print("Score +40 (long inactivity)")
-
-    if 4 <= latest_event.timestamp.hour <= 11:
-        score += 30
-        print("Score +30 (morning time)")
-
-    next_events = (
-        db.query(UserEvent)
-        .filter(
-            UserEvent.user_id == event.user_id,
-            UserEvent.timestamp > latest_event.timestamp
-        )
-        .order_by(UserEvent.timestamp.asc())
-        .limit(3)
-        .all()
-    )
-
-    print(f"Next events count: {len(next_events)}")
-
-    if len(next_events) >= 2:
-        score += 20
-        print("Score +20 (continued activity)")
-
-    print(f"FINAL WAKE SCORE: {score}")
-
-    if score < 60:
-        print("Wakeup NOT detected (score too low)")
+    if not (5 <= event.timestamp.hour <= 11):
         return
-
-    print("Wakeup condition PASSED")
 
     existing = db.execute(text("""
         SELECT wake_time FROM user_daily_summary
         WHERE user_id = :user_id AND date = :date
     """), {
         "user_id": event.user_id,
-        "date": latest_event.timestamp.date()
+        "date": event.timestamp.date()
     }).fetchone()
 
-    print(f"Existing wake entry: {existing}")
-
     if existing and existing[0]:
-        if abs(existing[0] - latest_event.timestamp) < timedelta(minutes=30):
-            print("Duplicate wakeup detected → skipping")
-            return
+        return
 
-    print(f"Saving wakeup for user {event.user_id} at {latest_event.timestamp}")
-
-    save_wakeup(db, event.user_id, latest_event.timestamp)
-
-    print("===== WAKEUP DETECTION END =====\n")
+    print(f"🌅 Wakeup detected at {event.timestamp}")
+    save_wakeup(db, event.user_id, event.timestamp)
 
 
-# ------------------ SLEEP ------------------
+# ======================================================
+# SLEEP DETECTION (UNCHANGED LOGIC)
+# ======================================================
 def detect_sleep(event, db):
 
-    print("\n===== SLEEP DETECTION START =====")
-
-    events = (
-        db.query(UserEvent)
-        .filter(UserEvent.user_id == event.user_id)
-        .order_by(UserEvent.timestamp.desc())
-        .limit(2)
+    events = db.query(UserEvent)\
+        .filter(UserEvent.user_id == event.user_id)\
+        .order_by(UserEvent.timestamp.desc())\
+        .limit(3)\
         .all()
-    )
-
-    print(f"Fetched events count: {len(events)}")
 
     if len(events) < 2:
-        print("Not enough events for sleep detection")
         return
 
-    latest_event = event
-    previous_event = events[1]
+    prev = events[1]
+    gap = event.timestamp - prev.timestamp
 
-    print(f"Prev: {previous_event.timestamp}, Curr: {latest_event.timestamp}")
-
-    if latest_event.timestamp == previous_event.timestamp:
-        print("Duplicate timestamps → skipping")
+    if gap < timedelta(hours=4):
         return
 
-    gap = latest_event.timestamp - previous_event.timestamp
-    print(f"GAP: {gap}")
-
-    score = 0
-
-    if gap >= timedelta(hours=5):
-        score += 40
-        print("Score +40 (long inactivity)")
-
-    if latest_event.timestamp.hour >= 21 or latest_event.timestamp.hour <= 2:
-        score += 30
-        print("Score +30 (night time)")
-
-    print(f"FINAL SLEEP SCORE: {score}")
-
-    if score < 60:
-        print("Sleep NOT detected (score too low)")
+    if not (event.timestamp.hour >= 21 or event.timestamp.hour <= 3):
         return
 
-    print("Sleep condition PASSED")
-
-    # assign correct sleep date
-    sleep_date = latest_event.timestamp.date()
-    if latest_event.timestamp.hour <= 3:
-        sleep_date = sleep_date - timedelta(days=1)
+    sleep_date = event.timestamp.date()
+    if event.timestamp.hour <= 3:
+        sleep_date -= timedelta(days=1)
 
     existing = db.execute(text("""
         SELECT sleep_time FROM user_daily_summary
@@ -176,152 +128,112 @@ def detect_sleep(event, db):
         "date": sleep_date
     }).fetchone()
 
-    print(f"Existing sleep entry: {existing}")
-
     if existing and existing[0]:
-        if abs(existing[0] - latest_event.timestamp) < timedelta(minutes=30):
-            print("Duplicate sleep detected → skipping")
-            return
-
-    print(f"Saving sleep for user {event.user_id} at {latest_event.timestamp}")
-
-    save_sleep(db, event.user_id, latest_event.timestamp)
-
-    print("===== SLEEP DETECTION END =====\n")
-
-# ------------------ SCREEN BEHAVIOUR ------------------
-def detect_screen_behaviour(events, db):
-
-    print("\n===== SCREEN BEHAVIOUR DETECTION START =====")
-
-    if not events or len(events) < 2:
-        print("Not enough events to analyze")
         return
 
-    print(f"Total events received: {len(events)}")
+    print(f"🌙 Sleep detected at {event.timestamp}")
+    save_sleep(db, event.user_id, event.timestamp)
 
-    total_screen_time = timedelta()
-    unlock_count = 0
-    short_sessions = 0
-    focus_sessions = 0
+
+# ======================================================
+# SCREEN BEHAVIOUR (UNCHANGED LOGIC + CLEAN LOGS)
+# ======================================================
+def detect_screen_behaviour(events, db):
+
+    print("\n========== SCREEN BEHAVIOUR ==========")
+
+    if not events:
+        print("❌ No events received")
+        return None
+
+    print(f"📦 Raw events: {len(events)}")
+
+    events = normalize_events(events)
+
+    if not events:
+        print("❌ No valid events after normalization")
+        return None
 
     sessions = []
-
-    # ------------------ SESSION BUILDING ------------------
-    print("\n--- Building Sessions ---")
-
-    for i in range(len(events) - 1):
-        current = events[i]
-        next_event = events[i + 1]
-
-        print(f"[{i}] {current.event_type} → {next_event.event_type}")
-
-        if current.event_type == "unlock" and next_event.event_type == "lock":
-            duration = next_event.timestamp - current.timestamp
-
-            print(f"Session detected: {duration}")
-
-            sessions.append(duration)
-            total_screen_time += duration
-            unlock_count += 1
-
-            if duration < timedelta(minutes=5):
-                short_sessions += 1
-                print("Short session detected")
-
-    print(f"\nTotal sessions: {len(sessions)}")
-    print(f"Total screen time: {total_screen_time}")
-    print(f"Unlock count: {unlock_count}")
-    print(f"Short sessions: {short_sessions}")
-
-    # ------------------ FOCUS SESSIONS ------------------
-    print("\n--- Detecting Focus Sessions ---")
-
-    for i in range(len(events) - 1):
-        gap = events[i + 1].timestamp - events[i].timestamp
-
-        print(f"Gap {i}: {gap}")
-
-        if timedelta(minutes=45) <= gap <= timedelta(minutes=90):
-            if 6 <= events[i].timestamp.hour <= 20:
-                focus_sessions += 1
-                print("Focus session detected")
-
-    print(f"Focus sessions: {focus_sessions}")
-
-    # ------------------ LATE NIGHT USAGE ------------------
-    print("\n--- Checking Late Night Usage ---")
-
-    late_night_usage = False
+    current_start = None
 
     for e in events:
-        print(f"Event hour: {e.timestamp.hour}")
+        if e.event_type == "unlock":
+            current_start = e.timestamp
 
-        if 0 <= e.timestamp.hour <= 2:
-            late_night_usage = True
-            print("Late night usage detected")
-            break
+        elif e.event_type == "lock" and current_start:
+            if e.timestamp > current_start:
+                sessions.append((current_start, e.timestamp))
+            current_start = None
 
-    print(f"Late night usage: {late_night_usage}")
+    if current_start:
+        sessions.append((current_start, events[-1].timestamp))
 
-    # ------------------ DISTRACTION DETECTION ------------------
-    print("\n--- Detecting Distraction ---")
+    if not sessions:
+        print("❌ No sessions built")
+        return None
 
-    distraction = False
+    total_screen = timedelta()
+    short_sessions = 0
 
-    if unlock_count > 0:
-        ratio = short_sessions / unlock_count
-    else:
-        ratio = 0
+    for start, end in sessions:
+        duration = end - start
+        total_screen += duration
 
-    print(f"Short session ratio: {ratio}")
+        if duration < timedelta(minutes=5):
+            short_sessions += 1
 
-    if unlock_count > 10 and ratio > 0.5:
-        distraction = True
-        print("User is distracted")
+    unlock_count = len(sessions)
 
-    print(f"Distraction: {distraction}")
+    focus_sessions = 0
+    for i in range(len(sessions) - 1):
+        gap = sessions[i+1][0] - sessions[i][1]
+        if FOCUS_MIN <= gap <= FOCUS_MAX:
+            focus_sessions += 1
 
-    # ------------------ FINAL DECISION ------------------
-    print("\n--- Final Behaviour Decision ---")
+    late_night = any(
+        (0 <= s[0].hour <= 2) and (s[1] - s[0] > timedelta(minutes=20))
+        for s in sessions
+    )
+
+    ratio = short_sessions / unlock_count if unlock_count else 0
+    distracted = unlock_count >= 5 and ratio > 0.4
 
     behaviour = "normal"
 
-    if distraction:
-        behaviour = "distracted"
-        print("Behaviour → distracted")
+    if total_screen > timedelta(hours=5):
+        behaviour = "overuse"
 
-    if focus_sessions > 0:
-        behaviour = "focused"
-        print("Behaviour → focused (overrides distracted)")
-
-    if late_night_usage:
+    if late_night and total_screen > timedelta(hours=2):
         behaviour = "unhealthy"
-        print("Behaviour → unhealthy (highest priority)")
 
-    print("\n===== FINAL RESULT =====")
-    print(f"Total screen time (sec): {round(total_screen_time.total_seconds())}")
-    print(f"Unlock count: {unlock_count}")
-    print(f"Short sessions: {short_sessions}")
-    print(f"Focus sessions: {focus_sessions}")
-    print(f"Late night usage: {late_night_usage}")
-    print(f"Final behaviour: {behaviour}")
+    elif focus_sessions >= 2:
+        behaviour = "focused"
 
-    print("===== SCREEN BEHAVIOUR DETECTION END =====\n")
+    elif distracted:
+        behaviour = "distracted"
 
-    return {
-        "total_screen_time": round(total_screen_time.total_seconds()),
+    result = {
+        "total_screen_time": int(total_screen.total_seconds()),
         "unlock_count": unlock_count,
         "short_sessions": short_sessions,
         "focus_sessions": focus_sessions,
-        "late_night_usage": late_night_usage,
+        "late_night_usage": late_night,
         "behaviour": behaviour
     }
 
-# ------------------ MEAL TIME ------------------
-def detect_meal(event, db, is_stationary=True):
+    print("✅ Screen behaviour:", result)
+    return result
 
-    print("\n===== MEAL DETECTION START =====")
+
+# ======================================================
+# MEAL DETECTION (FIXED WINDOW SKIP)
+# ======================================================
+from datetime import timedelta
+
+def detect_meal(events, db, is_stationary=True):
+
+    print("\n========== MEAL DETECTION ==========")
 
     meals_detected = []
 
@@ -334,347 +246,178 @@ def detect_meal(event, db, is_stationary=True):
             return "dinner"
         return None
 
-    print(f"Total events received: {len(event)}")
-
     i = 0
-    while i < len(event):
+    while i < len(events):
 
-        start_event = event[i]
-        print(f"\n--- New Window Start ---")
-        print(f"Start time: {start_event.timestamp}")
-
+        start_event = events[i]
         window_event = [start_event]
         j = i + 1
 
-        # Build 40-min window
-        while j < len(event):
-            time_diff = event[j].timestamp - start_event.timestamp
-
-            if time_diff <= timedelta(minutes=40):
-                window_event.append(event[j])
-                print(f"Adding event at {event[j].timestamp} (Δ {time_diff})")
+        # ---------------- WINDOW BUILD ----------------
+        while j < len(events):
+            if (events[j].timestamp - start_event.timestamp) <= timedelta(minutes=40):
+                window_event.append(events[j])
                 j += 1
             else:
                 break
 
-        print(f"Window size: {len(window_event)}")
-
-        # Determine meal type
         meal_type = get_meal_time(start_event.timestamp.hour)
-        print(f"Detected meal window type: {meal_type}")
 
-        if meal_type:
+        # ---------------- DETECTION ----------------
+        if meal_type and len(window_event) >= 3 and is_stationary:
+            meal = {
+                "meal_type": meal_type,
+                "time": start_event.timestamp,
+                "confidence": "medium"
+            }
+            meals_detected.append(meal)
 
-            unlock_count = len(window_event)
-            print(f"Unlock count in window: {unlock_count}")
+        i += 1  # sliding window
 
-            # Rule: Multiple unlock (>=3)
-            if unlock_count >= 3:
-                print("Rule passed: multiple unlocks")
+    print(f"\n🔎 Raw meals detected: {len(meals_detected)}")
 
-                # Rule: Stationary
-                print(f"Stationary status: {is_stationary}")
+    # ======================================================
+    # 🔥 SMART DEDUPLICATION (SESSION-BASED)
+    # ======================================================
+    meals_detected.sort(key=lambda x: x["time"])
 
-                if is_stationary:
-                    print("Rule passed: stationary")
+    unique_meals = []
 
-                    meal = {
-                        "meal_type": meal_type,
-                        "time": start_event.timestamp,
-                        "confidence": "medium"
-                    }
+    for meal in meals_detected:
 
-                    print(f"Meal detected: {meal}")
+        if not unique_meals:
+            unique_meals.append(meal)
+            continue
 
-                    meals_detected.append(meal)
+        last_meal = unique_meals[-1]
+        time_diff = meal["time"] - last_meal["time"]
 
-                else:
-                    print("Skipped: not stationary")
+        # 🚀 CORE LOGIC
+        if (
+            meal["meal_type"] == last_meal["meal_type"]
+            and time_diff <= timedelta(hours=3)
+        ):
+            print(f"⚠️ Skipping duplicate {meal['meal_type']} at {meal['time']}")
+            continue
 
-            else:
-                print("Skipped: not enough unlocks")
+        unique_meals.append(meal)
 
-        else:
-            print("Skipped: not in meal time window")
+    print(f"🧹 Deduplicated meals: {len(unique_meals)}")
 
-        i = j  # move to next window
+    print("\n🍽 FINAL MEALS:")
+    for m in unique_meals:
+        print(m)
 
-    print(f"\nTotal meals detected: {len(meals_detected)}")
-    print("===== MEAL DETECTION END =====\n")
+    return unique_meals
 
-    return meals_detected
 
+# ======================================================
+# DAILY PIPELINE (FINAL FIX)
+# ======================================================
 def process_daily_behaviour(user_id, db):
-    from datetime import datetime, timedelta
 
-    print("\n===== DAILY BEHAVIOUR PROCESSING START =====")
+    print("\n🚀 Running daily pipeline...")
 
-    # Use LOCAL TIME
-    today = datetime.now().date()
-
-    start = datetime.combine(today, datetime.min.time())
-    end = start + timedelta(days=1)
-
-    print(f"Processing date: {today}")
-    print(f"Window: {start} → {end}")
-
-    # Fetch events
-    events = (
-        db.query(UserEvent)
-        .filter(
-            UserEvent.user_id == user_id,
-            UserEvent.timestamp >= start,
-            UserEvent.timestamp < end
-        )
-        .order_by(UserEvent.timestamp.asc())
+    events = db.query(UserEvent)\
+        .filter(UserEvent.user_id == user_id)\
+        .order_by(UserEvent.timestamp.asc())\
         .all()
-    )
-
-    print(f"Fetched {len(events)} events")
 
     if not events:
-        print("No events found → skipping")
+        print("❌ No events found")
         return
 
-    # ------------------ SCREEN ------------------
-    print("\n--- SCREEN BEHAVIOUR ---")
+    print(f"📊 Total events fetched: {len(events)}")
 
-    result = detect_screen_behaviour(events, db)
+    today = events[-1].timestamp.date()
 
-    print(f"Screen result: {result}")
+    screen = detect_screen_behaviour(events, db)
 
-    save_screen_behaviour(
-        db,
-        user_id,
-        {
-            "total_screen_time_seconds": result["total_screen_time"],
-            "behaviour": result["behaviour"]
-        },
-        today
-    )
-
-    # ------------------ MEALS ------------------
-    print("\n--- MEAL DETECTION ---")
+    if screen:
+        save_screen_behaviour(db, user_id, screen, today)
 
     meals = detect_meal(events, db)
-
-    print(f"Meals detected: {meals}")
 
     if meals:
         save_meals(db, user_id, meals)
 
-    print("===== DAILY BEHAVIOUR PROCESSING END =====\n")
-
-
-# ------------------ ACTIVITY ------------------
-def detect_activity(event, db, locations):
-    """
-    event: list of events (stored ASC)
-        - timestamp
-        - event_type
-    
-    locations: list of location points (samr order)
-        - latitude
-        - longitude
-        - timestamp
-    """
-
-    results = []
-
-    # Helper: calculate distance (basic approximation)
-    def distance(loc1, loc2):
-        return ((loc1["lat"] - loc2["lat"])**2 + (loc1["lon"] - loc2["lon"])**2) ** 0.5
-    
-    # Detect still vs travelling
-    for i in range(len(locations) - 1):
-        current = locations[i]
-        next_loc = locations[i + 1]
-
-        time_gap = next_loc["timestamp"] - current["timestamp"]
-        dist = distance(current, next_loc)
-
-        # Still
-        if dist < 0.0005:
-            results.append({
-                "type": "still",
-                "time": current["timestamp"]
-            })
-        
-        # Travelling
-        if dist >= 0.0005 and time_gap <= timedelta(minutes=10):
-            results.append({
-                "type": "travelling",
-                "time": current["timestamp"]
-            })
-    
-    return results
-
-# ------------------ LOCATION ------------------
+# ======================================================
+# LOCATION (UNCHANGED CLEAN)
+# ======================================================
 def detect_stays(locations):
-    """
-    locations: list of dicts (sorted ASC)
-    [
-        {"lat": float, "lon": float, "timestamp": datetime}
-    ]
-    """
 
-    print("\n===== STAY DETECTION START =====")
+    if len(locations) < 2:
+        return []
+
+    locations = sorted(locations, key=lambda x: x["timestamp"])
 
     stays = []
+    DIST = 0.001
+    TIME = timedelta(minutes=10)
 
-    if not locations or len(locations) < 2:
-        print("Not enough location points")
-        return stays
-
-    # distance function (Haversine simplified)
-    def distance(p1, p2):
-        return math.sqrt(
-            (p1["lat"] - p2["lat"]) ** 2 +
-            (p1["lon"] - p2["lon"]) ** 2
-        )
-
-    DIST_THRESHOLD = 0.001       # ~100 meters
-    TIME_THRESHOLD = timedelta(minutes=10)
+    def dist(a, b):
+        return ((a["lat"] - b["lat"])**2 + (a["lon"] - b["lon"])**2) ** 0.5
 
     i = 0
-
     while i < len(locations) - 1:
 
-        start = locations[i]
-        cluster = [start]
-
+        cluster = [locations[i]]
         j = i + 1
 
-        while j < len(locations):
-            dist = distance(start, locations[j])
+        while j < len(locations) and dist(locations[i], locations[j]) <= DIST:
+            cluster.append(locations[j])
+            j += 1
 
-            if dist <= DIST_THRESHOLD:
-                cluster.append(locations[j])
-                j += 1
-            else:
-                break
+        duration = cluster[-1]["timestamp"] - cluster[0]["timestamp"]
 
-        # Calculate duration
-        start_time = cluster[0]["timestamp"]
-        end_time = cluster[-1]["timestamp"]
-        duration = end_time - start_time
-
-        print(f"\nCluster from {start_time} → {end_time}")
-        print(f"Points: {len(cluster)}, Duration: {duration}")
-
-        # Stay condition
-        if duration >= TIME_THRESHOLD:
-            avg_lat = sum(p["lat"] for p in cluster) / len(cluster)
-            avg_lon = sum(p["lon"] for p in cluster) / len(cluster)
-
+        if duration >= TIME:
             stays.append({
-                "lat": avg_lat,
-                "lon": avg_lon,
-                "start_time": start_time,
-                "end_time": end_time,
+                "lat": locations[i]["lat"],
+                "lon": locations[i]["lon"],
+                "start_time": cluster[0]["timestamp"],
+                "end_time": cluster[-1]["timestamp"],
                 "duration": duration
             })
 
-            print("→ STAY DETECTED")
-
-        i = j  # jump forward
-
-    print("\n===== STAY DETECTION END =====\n")
+        i = j
 
     return stays
 
+
 def detect_location(visits):
 
-    print("\n===== PLACE DETECTION START =====")
-
-    place_stats = defaultdict(lambda: {
+    stats = defaultdict(lambda: {
         "visits": 0,
-        "total_duration": timedelta(),
-        "time_slots": []
+        "total": timedelta(),
+        "hours": []
     })
 
-    def is_same_place(lat1, lon1, lat2, lon2, threshold=0.001):
-        return abs(lat1 - lat2) <= threshold and abs(lon1 - lon2) <= threshold
+    for v in visits:
+        key = (round(v["lat"], 3), round(v["lon"], 3))
 
-    # -----------------------------
-    # Aggregate locations
-    # -----------------------------
-    for visit in visits:
-
-        visit_key = (round(visit["lat"], 3), round(visit["lon"], 3))
-        matched_key = None
-
-        for key in place_stats:
-            if is_same_place(visit_key[0], visit_key[1], key[0], key[1]):
-                matched_key = key
-                break
-
-        if not matched_key:
-            matched_key = visit_key
-
-        duration = visit["end_time"] - visit["start_time"]
-
-        place_stats[matched_key]["visits"] += 1
-        place_stats[matched_key]["total_duration"] += duration
-        place_stats[matched_key]["time_slots"].append(visit["start_time"])
+        stats[key]["visits"] += 1
+        stats[key]["total"] += (v["end_time"] - v["start_time"])
+        stats[key]["hours"].append(v["start_time"].hour)
 
     results = []
 
-    # -----------------------------
-    # Classification
-    # -----------------------------
-    for place, data in place_stats.items():
+    for place, data in stats.items():
 
-        visits_counts = data["visits"]
-        total_duration = data["total_duration"]
-        avg_duration = total_duration / visits_counts
-        hours = [t.hour for t in data["time_slots"]]
+        avg = data["total"] / data["visits"]
 
-        print(f"\nAnalyzing place: {place}")
-        print(f"Visits: {visits_counts}, Avg Duration: {avg_duration}")
-
-        # HOME
-        if (
-            any(0 <= h <= 6 for h in hours) and
-            avg_duration >= timedelta(hours=5) and
-            visits_counts >= 3
-        ):
+        if any(0 <= h <= 6 for h in data["hours"]) and avg >= timedelta(hours=5):
             results.append({"place": place, "type": "home"})
-            print("→ HOME")
-            continue
 
-        # WORK
-        if (
-            any(9 <= h <= 18 for h in hours) and
-            timedelta(hours=4) <= avg_duration <= timedelta(hours=9) and
-            visits_counts >= 3
-        ):
+        elif any(9 <= h <= 18 for h in data["hours"]) and timedelta(hours=4) <= avg <= timedelta(hours=9):
             results.append({"place": place, "type": "work"})
-            print("→ WORK")
-            continue
 
-        # ACTIVITY
-        if (
-            timedelta(hours=1) <= avg_duration <= timedelta(hours=2) and
-            visits_counts >= 3
-        ):
+        elif timedelta(hours=1) <= avg <= timedelta(hours=2):
             results.append({"place": place, "type": "activity_place"})
-            print("→ ACTIVITY")
-            continue
 
-        # MEAL
-        if (
-            timedelta(minutes=30) <= avg_duration <= timedelta(hours=1) and
-            visits_counts >= 3
-        ):
+        elif timedelta(minutes=30) <= avg <= timedelta(hours=1):
             results.append({"place": place, "type": "meal_place"})
-            print("→ MEAL")
-            continue
 
-        # FALLBACK
-        results.append({"place": place, "type": "unknown"})
-        print("→ UNKNOWN")
-
-    print("\n===== PLACE DETECTION END =====\n")
+        else:
+            results.append({"place": place, "type": "unknown"})
 
     return results

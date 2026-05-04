@@ -64,7 +64,7 @@ def location_events(data: LocationBatch, db: Session = Depends(get_db)):
     save_place_visits(db, user_id, stays)
 
     # =========================
-    # STEP 3: FETCH ALL VISITS (CRITICAL FIX)
+    # STEP 3: FETCH ALL VISITS 
     # =========================
     visits = db.execute(text("""
         SELECT lat, lon, start_time, end_time

@@ -13,7 +13,6 @@ def generate_user_meals_id():
 def generate_user_palce_id():
     return "uplaces_" + uuid.uuid4().hex[:6].upper()
 
-
 class UserDailySummary(Base):
     __tablename__ = "user_daily_summary"
 

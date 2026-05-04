@@ -122,7 +122,7 @@ def save_place_visits(db, user_id, stays):
             lat = stay["lat"]
             lon = stay["lon"]
 
-            # 🔒 Prevent duplicate visits
+            # Prevent duplicate visits
             existing = db.execute(text("""
                 SELECT id FROM user_place_visits
                 WHERE user_id = :user_id

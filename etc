@@ -1,20 +1,32 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, JSON
-from app.db.base import Base
-from datetime import datetime
-import uuid
+from datetime import datetime, timedelta
+from jose import jwt
+from passlib.context import CryptContext
 
-class UserDailySummary(Base):
-    __tablename__ = "user_daily_summary"
+SECRET_KEY = "your_secret_key"
+ALGORITHM = "HS256"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-    date = Column(DateTime, index=True)
 
-    wake_time = Column(DateTime, nullable=True)
-    sleep_time = Column(DateTime, nullable=True)
+def hash_password(password: str):
+    return pwd_context.hash(password)
 
-    total_screen_time = Column(Integer)  # seconds
-    behaviour_type = Column(String)  # focused/distracted/unhealthy
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+def verify_password(plain, hashed):
+    return pwd_context.verify(plain, hashed)
+
+
+def create_access_token(user_id: int):
+    payload = {
+        "sub": str(user_id),
+        "exp": datetime.utcnow() + timedelta(minutes=30)
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_refresh_token(user_id: int):
+    payload = {
+        "sub": str(user_id),
+        "exp": datetime.utcnow() + timedelta(days=30)
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)

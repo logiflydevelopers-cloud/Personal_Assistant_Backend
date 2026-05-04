@@ -8,6 +8,9 @@ from app.workers.tasks import process_event_task
 def create_event(data, db, background_tasks=None):
 
     user = db.query(User).filter(User.user_id == data.user_id).first()
+    timestamp = datetime.fromisoformat(
+        data.timestamp.replace("Z", "+00:00")
+    )
 
     if not user:
         raise Exception("User not found")
@@ -16,7 +19,7 @@ def create_event(data, db, background_tasks=None):
         user_id=user.id,
         event_type=data.event_type,
         event_data=data.event_data,
-        timestamp=datetime.fromisoformat(data.timestamp)
+        timestamp=timestamp,
     )
 
     db.add(event)
